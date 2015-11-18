@@ -1,15 +1,7 @@
-FROM nano/node.js
-MAINTAINER Roman Atachiants "roman@misakai.com"
+FROM ubuntu
 
-# Extract & Install
-COPY . /app
-WORKDIR /app
+RUN apt-get update && apt-get install -y nodejs
+ADD . /opt/dns
 
-# since we are using nano image, we can't run npm
-#RUN npm install
-
-# Http Port
-EXPOSE 8053
-ENV AWS_REGION eu-west-1
-
-CMD ["/usr/bin/node", "/app/dns.js"]
+ENV DEBUG dns:marathon,dns:route53,dns
+CMD ["/usr/bin/nodejs", "/opt/dns/dns.js"]

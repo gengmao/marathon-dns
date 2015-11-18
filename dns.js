@@ -12,7 +12,7 @@ debug.marathon = require("debug")("dns:marathon");
 debug.route53 = require("debug")("dns:route53");
 
 // Connect to AWS
-AWS.config.region = process.env.AWS_REGION;
+AWS.config.region = process.env.AWS_REGION || "us-east-1";
 AWS.config.credentials = {
 	accessKeyId: process.env.AWS_ACCESS_KEY,
 	secretAccessKey: process.env.AWS_SECRET_KEY
@@ -22,41 +22,46 @@ AWS.config.credentials = {
 var route53  = new AWS.Route53();
 var marathon = new Marathon({base_url: process.env.MARATHON_HOST});
 
-// State of the previous update
+var marathonPollInterval = process.env.MARATHON_POLL_INTERVAL || 30000;
+var listenPort = process.env.PORT || 8053;
+var recordTTL = process.env.RECORD_TTL || 60;
+var defaultDnsScope = process.env.DEFAULT_DNS_SCOPE || 'external';
+
 var state = null;
 var stateTable = null;
 
-// Start the polling timer 
 setInterval(function(){
-
 	marathon.apps.list().then(function(res) {
-		// Get the apps and filter them out by 'DNS' environment variable
-		debug.marathon('querying marathon');
 		var targets = [];
+
+		debug.marathon('querying marathon apps');
 		res.apps.forEach(function(app){
-			if(typeof app.env['DNS'] != 'undefined')
+			if (typeof app.env['DNS'] != 'undefined') {
 				targets.push({
 					id: app.id,
-					dns: app.env['DNS']
+					dns: app.env['DNS'],
+					dns_scope: app.env['DNS_SCOPE'] || defaultDnsScope
 				});
+			}
 		});
 		return targets;
-	})
-	.then(function(apps){
+	}).then(function(apps){
 		var q = Q.defer()
-		//debug.marathon('querying marathon tasks');
+		debug.marathon('querying marathon tasks');
 		marathon.tasks.list().then(function(res){
 			var records = [];
-			res.tasks.forEach(function(task){
-				for(var i=0; i< apps.length; ++i){
+			res.tasks.forEach(function(task) {
+				for(var i=0; i < apps.length; ++i){
 					var app = apps[i];
-					if(app.id != task.appId)
+					if (app.id != task.appId) {
 						continue;
+					}
 
-					//debug.marathon('creating record: ' + app.dns + '@' + task.host);
+					debug.marathon('detected task addr: ' + app.dns + '@' + task.host);
 					records.push({
 						name: app.dns,
-						host: task.host
+						host: task.host,
+						dns_scope: app.dns_scope
 					})
 				}
 			});
@@ -64,15 +69,13 @@ setInterval(function(){
 			q.resolve(records);
 		});
 		return q.promise;
-	})
-	.then(function(records){
+	}).then(function(records){
 		update(records);
-	})
-	.fail(function(err){
+	}).fail(function(err){
 		debug(err);
 	});
 
-}, 15000);
+}, marathonPollInterval);
 
 
 // Update route53
@@ -106,13 +109,12 @@ function update(records){
 		// Group by zone for Route53
 		var groupByZone = {};
 		for(var name in data.table){
-			var hname = name.split('.')
+			var hname = name.split('.');
 			if(hname.length < 3)
 				continue;
 
-			// Get a hosted zone name and a prefix
-			var zone = hname[hname.length - 2] + '.' + hname[hname.length - 1];
-			var zone = zone + '.';
+			hname.shift();
+			var zone = hname.join('.') + '.';
 
 			// Find the appropriate hosting zone (must exist)
 			for(var i=0; i< data.zones.HostedZones.length; ++i){
@@ -136,61 +138,20 @@ function update(records){
 			}
 		}
 
-		// create also public records
-		var qPubRec = [];
-		for(var zoneName in groupByZone){
-			var zone = groupByZone[zoneName];
+		// Compare current and previous states, modifying it
+		var current = utils.diff(utils.clone(state), utils.clone(groupByZone));
+		state = utils.clone(groupByZone);
 
-			// for each subdomain
-			zone.rec.forEach(function(r){
-				var qAddr = [];
-				var vAddr = [];
-				var q = Q.defer();
-				qPubRec.push(q.promise);
-				r.records.addr.forEach(function(addr){
-					
-					qAddr.push(utils.beacon(addr).then(function(b){
-						vAddr.push(JSON.parse(b).public)
-					}).fail(function(err){
-						debug(err);
-					}));
-				});
-
-				// When we have the vAddr populated
-				Q.allSettled(qAddr).then(function(){
-					var pub = utils.clone(r);
-					pub.name = 'pub.' + pub.name;
-					pub.records.name = pub.name;
-					pub.records.addr = vAddr;
-					groupByZone[zoneName].rec.push(pub);
-					q.resolve();
-				});
+		// Update the records
+		for(var zoneName in current){
+			var zone = current[zoneName];
+			updateRecords(zone).then(function(){
+				debug.route53('updated ' + zoneName);
+			})
+			.fail(function(err){
+				debug.route53(err);
 			});
 		}
-
-		// Wait for every ip resolved
-		Q.allSettled(qPubRec).then(function(){
-			// make sure the data is comparable
-			groupByZone = utils.clone(groupByZone);
-
-			// Compare current and previous states, modifying it
-			var current = utils.diff(utils.clone(state), utils.clone(groupByZone));
-			state = utils.clone(groupByZone);
-
-			// Update the records
-			for(var zoneName in current){
-				var zone = current[zoneName];
-				updateRecords(zone).then(function(){
-					debug.route53('updated ' + zoneName);
-				})
-				.fail(function(err){
-					debug.route53(err);
-				});
-			}
-		})
-		.fail(function(err){
-			debug.route53(err);
-		})
 	})
 	.fail(function(err){
 		debug.route53(err);
@@ -220,7 +181,7 @@ function updateRecords(zone){
 				Name: change.name, 
 				Type: 'A',
 				ResourceRecords: recordSet,
-				TTL: 300
+				TTL: recordTTL
 			}
 		});
 	});
@@ -242,7 +203,7 @@ function updateRecords(zone){
 				Name: deletion.name, 
 				Type: 'A',
 				ResourceRecords: recordSet,
-				TTL: 300
+				TTL: recordTTL
 			}
 		});
 	});
@@ -271,29 +232,47 @@ function updateRecords(zone){
 // Build a dns table from the records provided
 function buildTable(records){	
 	var table = {};
-	//debug('building dns table');
 
 	// Create the records in the table
-	records.forEach(function(record){
+	records.forEach(function(record) {
 		record.name = (record.name.indexOf('://') != -1) 
 			? url.parse(record.name).hostname
 			: record.name;
 
-		if(typeof table[record.name] === 'undefined')
+		if (typeof table[record.name] === 'undefined') {
 			table[record.name] = {
 				name: record.name,
 				resolve: [],
 				addr: []
 			};
+		}
 
 		// Push resolve functions
-		table[record.name].resolve.push(utils.ipv4(record.host));	
+		if (record.dns_scope == 'internal') {
+			table[record.name].resolve.push(utils.ipv4(record.host));
+		} else {
+			table[record.name].resolve.push(utils.ec2Ipv4(record.host));
+
+			if (record.dns_scope == 'dual') {
+				var internalName = 'internal-' + record.name;
+				if (typeof table[internalName] === 'undefined') {
+					table[internalName] = {
+						name: internalName,
+						resolve: [],
+						addr: []
+					};
+				}
+
+				table[internalName].resolve.push(utils.ipv4(record.host));
+			}
+		}
 	});
 
 	// Resolve each record
 	var q = [];
 	for(var name in table){
-		table[name].resolve.forEach(function(promise){
+		debug.route53('resolving records for address: ' + name);
+		table[name].resolve.forEach(function(promise) {
 			q.push(promise);
 		})
 	}
@@ -330,8 +309,8 @@ function buildTable(records){
 }
 
 // Start the server
-http.createServer(function (req, res) {  
-  res.writeHead(200, {'Content-Type': 'text/plain'});
-  res.write('Misakai.Dns')
+http.createServer(function (req, res) {
+  res.writeHead(200, {'Content-Type': 'application/json'});
+  res.write(JSON.stringify(state));
   res.end();
-}).listen(8053);
+}).listen(listenPort);
