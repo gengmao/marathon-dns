@@ -109,19 +109,13 @@ function update(records){
 		// Group by zone for Route53
 		var groupByZone = {};
 		for(var name in data.table){
-			var hname = name.split('.');
-			if(hname.length < 3)
-				continue;
-
-			hname.shift();
-			var zone = hname.join('.') + '.';
 
 			// Find the appropriate hosting zone (must exist)
 			for(var i=0; i< data.zones.HostedZones.length; ++i){
 				var hostedZone = data.zones.HostedZones[i];
-				if(hostedZone.Name == zone){
-					if(typeof groupByZone[zone] === 'undefined'){
-						groupByZone[zone] = {
+				if(name.endsWith(hostedZone.Name.slice(0,-1))){
+					if(typeof groupByZone[hostedZone.Name] === 'undefined'){
+						groupByZone[hostedZone.Name] = {
 							id: hostedZone.Id,
 							rec: [],
 							del: []
@@ -129,7 +123,7 @@ function update(records){
 					}
 
 					delete data.table[name]['resolve'];
-					groupByZone[zone].rec.push({
+					groupByZone[hostedZone.Name].rec.push({
 						name: name,
 						records: data.table[name]
 					});
