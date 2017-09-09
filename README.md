@@ -7,8 +7,8 @@ It is *recommended* to launch marathon-dns into your cluster using Marathon for 
 
 The following env variables are available for configuration:
   - AWS_REGION
-  - AWS_ACCESS_KEY (required)
-  - AWS_SECRET_KEY (required)
+  - AWS_ACCESS_KEY
+  - AWS_SECRET_KEY
   - MARATHON_HOST (required)
   - MARATHON_AUTH
   - MARATHON_POLL_INTERVAL

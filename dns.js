@@ -13,10 +13,12 @@ debug.route53 = require("debug")("dns:route53");
 
 // Connect to AWS
 AWS.config.region = process.env.AWS_REGION || "us-east-1";
-AWS.config.credentials = {
-	accessKeyId: process.env.AWS_ACCESS_KEY,
-	secretAccessKey: process.env.AWS_SECRET_KEY
-};
+if (process.env.AWS_ACCESS_KEY && process.env.AWS_SECRET_KEY) {
+	AWS.config.credentials = {
+		accessKeyId: process.env.AWS_ACCESS_KEY,
+		secretAccessKey: process.env.AWS_SECRET_KEY
+	};
+}
 
 // Create Route53 client
 var route53  = new AWS.Route53();
